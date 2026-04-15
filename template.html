@@ -15,13 +15,14 @@
         .sni-title { font-weight: bold; font-size: 18px; margin-bottom: 5px; }
         .sni-title a { color: #333; text-decoration: none; }
         .sni-title a:hover { text-decoration: underline; }
-        .match-reason { font-size: 14px; color: #555; background: #e0e0e0; padding: 8px; border-radius: 4px; margin-top: 10px; }
+        .match-reason { font-size: 14px; color: #555; background: #e0e0e0; padding: 10px; border-radius: 4px; margin-top: 10px; line-height: 1.4; }
+        .query-part { color: #005A9C; font-weight: bold; }
     </style>
 </head>
 <body>
 
-    <h2>🤖 SCB SNI AI-Sök</h2>
-    <p>Beskriv din verksamhet med en eller två meningar (t.ex. "Jag bygger larm och lögndetektorer"). Sökningen körs helt lokalt i din webbläsare.</p>
+    <h2>🤖 SCB SNI AI-Sök (Multi-Sök)</h2>
+    <p>Beskriv din verksamhet. Skriv gärna flera olika delar (t.ex. "Vi bygger bilar, säljer kaffe och odlar potatis").</p>
     
     <input type="text" id="query" placeholder="Beskriv din verksamhet här..." disabled>
     <button id="searchBtn" disabled>Sök</button>
@@ -73,13 +74,13 @@
 
         async function init() {
             try {
-                // Check if we are running via file:// protocol
                 if (window.location.protocol === 'file:') {
                     throw new Error("Säkerhetsblockering! Du kan inte köra denna fil via 'file://' i Chrome. Kör via en webbserver eller GitHub Pages.");
                 }
 
                 statusEl.innerText = "Steg 1/2: Laddar ner AI-modell (ca 118 MB)...";
-                extractor = await pipeline('feature-extraction', 'Xenova/paraphrase-multilingual-MiniLM-L12-v2');
+                // Force unquantized model to match the Python FP32 database generation
+                extractor = await pipeline('feature-extraction', 'Xenova/paraphrase-multilingual-MiniLM-L12-v2', { quantized: false });
                 
                 statusEl.innerText = "Steg 2/2: Optimerar AI för din enhet (Kan ta upp till en minut)...";
                 await extractor("warmup", { pooling: 'mean', normalize: true });
@@ -95,28 +96,57 @@
         }
 
         searchBtn.addEventListener('click', async () => {
-            const queryText = queryInput.value;
-            if (!queryText) return;
+            const rawQueryText = queryInput.value;
+            if (!rawQueryText) return;
 
             statusEl.innerText = "Söker...";
             resultsEl.innerHTML = "";
             searchBtn.disabled = true;
 
-            // Yield execution to the browser to render the status text
             await new Promise(resolve => setTimeout(resolve, 50));
 
             try {
-                const queryOutput = await extractor(queryText, { pooling: 'mean', normalize: true });
-                const queryVector = Array.from(queryOutput.data);
+                // 1. Split the query by period, comma, or the words "och" / "samt" (with word boundaries)
+                // We use trim and filter to remove any empty strings resulting from the split
+                const queryPieces = rawQueryText
+                    .split(/[\.,]|\boch\b|\bsamt\b/gi)
+                    .map(piece => piece.trim())
+                    .filter(piece => piece.length > 0);
 
-                // Compare user input against our flattened chunks
+                // 2. Vectorize every valid piece of the input
+                const queryVectors = [];
+                for (const piece of queryPieces) {
+                    const output = await extractor(piece, { pooling: 'mean', normalize: true });
+                    queryVectors.push({
+                        text: piece,
+                        vector: Array.from(output.data)
+                    });
+                }
+
+                // 3. Compare all searchable chunks against ALL query vectors
                 let scoredChunks = searchableChunks.map(chunk => {
-                    return { ...chunk, score: cosineSimilarity(queryVector, chunk.vector) };
+                    let highestScore = -1;
+                    let bestMatchedQueryPiece = "";
+
+                    for (const qObj of queryVectors) {
+                        const currentScore = cosineSimilarity(qObj.vector, chunk.vector);
+                        if (currentScore > highestScore) {
+                            highestScore = currentScore;
+                            bestMatchedQueryPiece = qObj.text;
+                        }
+                    }
+
+                    return { 
+                        ...chunk, 
+                        score: highestScore, 
+                        matchedQuery: bestMatchedQueryPiece 
+                    };
                 });
 
+                // Sort by highest similarity overall
                 scoredChunks.sort((a, b) => b.score - a.score);
 
-                // Deduplicate to show top 5 unique SNI codes
+                // 4. Deduplicate to show top 10 unique SNI codes
                 let uniqueResults = [];
                 let seenSni = new Set();
                 
@@ -124,19 +154,23 @@
                     if (!seenSni.has(chunk.sni)) {
                         uniqueResults.push(chunk);
                         seenSni.add(chunk.sni);
-                        if (uniqueResults.length === 5) break; 
+                        if (uniqueResults.length === 10) break; // Now captures top 10
                     }
                 }
 
-                statusEl.innerText = "Klar!";
+                statusEl.innerText = `Hittade ${uniqueResults.length} träffar baserat på ${queryPieces.length} sökdelar.`;
                 searchBtn.disabled = false;
 
+                // 5. Render results, showing exactly which piece matched
                 uniqueResults.forEach(res => {
                     resultsEl.innerHTML += `
                         <div class="result">
                             <div class="score">Träffsäkerhet: ${(res.score * 100).toFixed(1)}%</div>
                             <div class="sni-title"><a href="${res.url}" target="_blank">${res.sni} - ${res.title}</a></div>
-                            <div class="match-reason"><strong>AI hittade detta samband:</strong><br> "${res.matchedText}"</div>
+                            <div class="match-reason">
+                                Din sökdel "<span class="query-part">${res.matchedQuery}</span>" matchade:<br>
+                                <strong>"${res.matchedText}"</strong>
+                            </div>
                         </div>
                     `;
                 });
