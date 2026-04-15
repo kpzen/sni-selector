@@ -1,0 +1,102 @@
+[
+  {
+    "sni": "01.110",
+    "title": "Odling av spannmål (utom ris), baljväxter och oljeväxter",
+    "url": "https://snisok.scb.se/01110",
+    "covers": [
+      "alla former av odling av spannmål, baljväxter och oljeväxter samt odling av dessa växter för produktion av utsäde. Odling av dessa växter kombineras ofta inom jordbruksföretag.",
+      "odling av spannmål. t.ex.:",
+      "vete",
+      "majs",
+      "durra",
+      "korn",
+      "råg",
+      "havre",
+      "hirs",
+      "pseudospannmål, frukter eller frön, som används som spannmål, t.ex.:",
+      "quinoa",
+      "amarant",
+      "chia",
+      "odling av baljväxter, t.ex.:",
+      "bönor",
+      "bondbönor",
+      "kikärter",
+      "vignabönor",
+      "linser",
+      "lupiner",
+      "ärter",
+      "duvärter",
+      "odling av oljeväxter, t.ex.:",
+      "sojabönor",
+      "jordnötter",
+      "ricin",
+      "linfrö",
+      "senapsfrön",
+      "nigerfrön",
+      "raps",
+      "safflorfrö",
+      "sesamfrö",
+      "solrosfrö"
+    ],
+    "also_covers": [],
+    "does_not_cover": [
+      "odling av ris, jfr 01.120",
+      "odling av sockermajs, jfr 01.13",
+      "odling av fodermajs, lupiner, foderkål, jfr 01.199",
+      "odling av oljehaltiga frukter, jfr 01.260"
+    ],
+    "examples": [
+      "Biobränsle, odling energigrödor",
+      "Odling av baljväxter",
+      "Odling av bönor",
+      "Odling av energigrödor",
+      "Odling av havre",
+      "Odling av korn",
+      "Odling av majs (ej självplockning)",
+      "Odling av oljelin",
+      "Odling av oljeväxter",
+      "Odling av raps",
+      "Odling av rybs",
+      "Odling av råg",
+      "Odling av solrosfrö",
+      "Odling av spannmål",
+      "Odling av trindsäd (baljväxter)",
+      "Odling av vete",
+      "Odling av ärtor",
+      "Småbruk mest odling av spannmål",
+      "Växtodling, blandat, mest jordbruksväxter, mest spannmål"
+    ]
+  },
+  {
+    "sni": "01.120",
+    "title": "Odling av ris",
+    "url": "https://snisok.scb.se/01120",
+    "covers": [
+      "odling av ris"
+    ],
+    "also_covers": [],
+    "does_not_cover": [],
+    "examples": [
+      "Odling av ris"
+    ]
+  },
+  {
+    "sni": "01.131",
+    "title": "Potatisodling",
+    "url": "https://snisok.scb.se/01131",
+    "covers": [
+      "odling av potatis"
+    ],
+    "also_covers": [],
+    "does_not_cover": [],
+    "examples": [
+      "Potatisodling",
+      "Matpotatis, odling",
+      "Odling av potatis",
+      "Småbruk mest odling av potatis",
+      "Stärkelsepotatis, odling",
+      "Utsädesodling av potatis",
+      "Växtodling, blandat, mest jordbruksväxter, mest potatis"
+    ]
+  }
+]
