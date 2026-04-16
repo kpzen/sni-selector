@@ -3,191 +3,151 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SNI-sök (KBLab AI)</title>
+    <title>SNI AI-Sök Demo</title>
     <style>
-        body {
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            max-width: 800px;
-            margin: 2rem auto;
-            padding: 0 1rem;
-            line-height: 1.5;
-            color: #333;
-        }
-        .search-container {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 1rem;
-        }
-        input[type="text"] {
-            flex-grow: 1;
-            padding: 0.75rem;
-            font-size: 1rem;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-        }
-        button {
-            padding: 0.75rem 1.5rem;
-            font-size: 1rem;
-            background-color: #0056b3;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-        }
-        button:disabled {
-            background-color: #999;
-            cursor: not-allowed;
-        }
-        #status {
-            font-style: italic;
-            color: #666;
-            margin-bottom: 2rem;
-        }
-        .result {
-            border: 1px solid #e0e0e0;
-            padding: 1.5rem;
-            margin-bottom: 1rem;
-            border-radius: 6px;
-            background-color: #fafafa;
-        }
-        .score {
-            font-weight: 600;
-            color: #2e7d32;
-            font-size: 0.9rem;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .sni-title {
-            font-size: 1.25rem;
-            font-weight: bold;
-            margin: 0.5rem 0;
-        }
-        .sni-title a {
-            color: #0056b3;
-            text-decoration: none;
-        }
-        .sni-title a:hover {
-            text-decoration: underline;
-        }
-        .match-reason {
-            font-size: 0.95rem;
-            color: #555;
-            background-color: #fff;
-            padding: 0.75rem;
-            border-left: 4px solid #0056b3;
-            margin-top: 0.75rem;
-        }
-        .query-part {
-            font-weight: bold;
-            color: #111;
-        }
+        body { font-family: system-ui, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; color: #333; }
+        input { width: 100%; padding: 12px; margin-bottom: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        button { width: 100%; padding: 12px; font-size: 16px; cursor: pointer; background: #005A9C; color: white; border: none; border-radius: 4px; }
+        button:disabled { background: #999; }
+        #status { color: #666; margin-bottom: 20px; font-style: italic; font-size: 14px; text-align: center; }
+        .result { background: #f4f4f5; padding: 15px; margin-bottom: 15px; border-radius: 6px; border-left: 4px solid #005A9C; }
+        .score { font-weight: bold; color: #005A9C; margin-bottom: 5px; font-size: 14px;}
+        .sni-title { font-weight: bold; font-size: 18px; margin-bottom: 5px; }
+        .sni-title a { color: #333; text-decoration: none; }
+        .sni-title a:hover { text-decoration: underline; }
+        .match-reason { font-size: 14px; color: #555; background: #e0e0e0; padding: 10px; border-radius: 4px; margin-top: 10px; line-height: 1.4; }
+        .query-part { color: #005A9C; font-weight: bold; }
     </style>
 </head>
 <body>
-    <h1>AI-driven SNI-sök</h1>
-    <p>Beskriv din verksamhetsidé (du kan ange flera delar separerade med kommatecken).</p>
+
+    <h2>🤖 SCB SNI AI-Sök (Multi-Sök)</h2>
+    <p>Beskriv din verksamhet. Skriv gärna flera olika delar (t.ex. "Vi bygger bilar, säljer kaffe och odlar potatis").</p>
     
-    <div class="search-container">
-        <input type="text" id="searchInput" placeholder="T.ex. Jag vill tillverka glass, sälja mjukglass">
-        <button id="searchBtn" disabled>Laddar AI-modell...</button>
-    </div>
-    
-    <div id="status">Laddar KBLab-modell via WebGPU och hämtar databas, vänligen vänta...</div>
+    <input type="text" id="query" placeholder="Beskriv din verksamhet här..." disabled>
+    <button id="searchBtn" disabled>Sök</button>
+    <div id="status">Laddar databas och AI-modell...</div>
     <div id="results"></div>
 
     <script type="module">
-        import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.0.0';
+        import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
+        env.allowLocalModels = false;
 
-
-        const searchInput = document.getElementById('searchInput');
-        const searchBtn = document.getElementById('searchBtn');
         const statusEl = document.getElementById('status');
         const resultsEl = document.getElementById('results');
+        const searchBtn = document.getElementById('searchBtn');
+        const queryInput = document.getElementById('query');
+        const database = /*INJECT_DATABASE_HERE*/; 
+
+        // Flatten the nested JSON into a single searchable array of chunks
+        const searchableChunks = [];
+        if (Array.isArray(database)) {
+            database.forEach(sniObj => {
+                if (sniObj.chunks) {
+                    sniObj.chunks.forEach(chunk => {
+                        searchableChunks.push({
+                            sni: sniObj.sni,
+                            title: sniObj.title,
+                            url: sniObj.url,
+                            matchedText: chunk.text,
+                            vector: chunk.vector
+                        });
+                    });
+                }
+            });
+        }
 
         let extractor;
-        let database = [];
-
-        // Utility: Calculate Cosine Similarity via Dot Product (Valid since vectors are L2 normalized)
-        function dotProduct(vecA, vecB) {
-            return vecA.reduce((sum, val, i) => sum + val * vecB[i], 0);
+        function cosineSimilarity(vecA, vecB) {
+            let dotProduct = 0, normA = 0, normB = 0;
+            for (let i = 0; i < vecA.length; i++) {
+                dotProduct += vecA[i] * vecB[i];
+                normA += vecA[i] ** 2;
+                normB += vecB[i] ** 2;
+            }
+            if (normA === 0 || normB === 0) return 0;
+            return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
         }
 
         async function init() {
             try {
-                // 2. Load the pre-embedded database from the bundler
-                const rawData = `/*INJECT_DATABASE_HERE*/`;
-                
-                if (rawData.trim() === '/*INJECT_DATABASE_HERE*/') {
-                    throw new Error("Databasen är inte inläst. Vänligen kör bundler.py först.");
+                if (window.location.protocol === 'file:') {
+                    throw new Error("Säkerhetsblockering! Du kan inte köra denna fil via 'file://' i Chrome. Kör via en webbserver eller GitHub Pages.");
                 }
+
+                statusEl.innerText = "Steg 1/2: Laddar ner AI-modell (ca 125 MB)...";
+                // Load the specialized Swedish Sentence-BERT ONNX model
+                extractor = await pipeline('feature-extraction', 'Kristian-E/sentence-bert-swedish-onnx');
+                statusEl.innerText = "Steg 2/2: Optimerar AI för din enhet (Kan ta upp till en minut)...";
+                await extractor("warmup", { pooling: 'mean', normalize: true });
                 
-                database = JSON.parse(rawData);
-
-                // 3. Initialize the WebGPU pipeline with the KBLab model
-                extractor = await pipeline(
-                    'feature-extraction', 
-                    'Kristian-E/sentence-bert-swedish-onnx', 
-                    { device: 'webgpu' }
-                );
-
-                statusEl.innerText = "Klar! Skriv in din verksamhetsidé och klicka på sök.";
+                statusEl.innerText = "Klar! Skriv in en sökning.";
                 searchBtn.disabled = false;
+                queryInput.disabled = false;
             } catch (error) {
-                console.error("Initialization Error:", error);
+                console.error("Init Error:", error);
                 statusEl.innerText = "Ett fel uppstod: " + error.message;
                 statusEl.style.color = "red";
             }
         }
 
         searchBtn.addEventListener('click', async () => {
-            const query = searchInput.value.trim();
-            if (!query) return;
+            const rawQueryText = queryInput.value;
+            if (!rawQueryText) return;
 
-            searchBtn.disabled = true;
-            statusEl.innerText = "Beräknar semantiska inbäddningar...";
-            statusEl.style.color = "#555";
+            statusEl.innerText = "Söker...";
             resultsEl.innerHTML = "";
+            searchBtn.disabled = true;
+
+            await new Promise(resolve => setTimeout(resolve, 50));
 
             try {
-                // Split query by commas to handle multi-part inputs natively
-                const queryPieces = query.split(',').map(s => s.trim()).filter(s => s.length > 0);
-                let allMatches = [];
+                // 1. Split the query by period, comma, or the words "och" / "samt" (with word boundaries)
+                // We use trim and filter to remove any empty strings resulting from the split
+                const queryPieces = rawQueryText
+                    .split(/[\.,]|\boch\b|\bsamt\b/gi)
+                    .map(piece => piece.trim())
+                    .filter(piece => piece.length > 0);
 
-                // Process each piece of the query against the vector database
+                // 2. Vectorize every valid piece of the input
+                const queryVectors = [];
                 for (const piece of queryPieces) {
-                    // Extract embedding with mean pooling and L2 normalization
                     const output = await extractor(piece, { pooling: 'mean', normalize: true });
-                    const queryVector = Array.from(output.data);
-
-                    for (const item of database) {
-                        if (!item.chunks) continue;
-                        
-                        for (const chunk of item.chunks) {
-                            const score = dotProduct(queryVector, chunk.vector);
-                            
-                            allMatches.push({
-                                sni: item.sni,
-                                title: item.title || "Titel saknas",
-                                url: item.url || "#",
-                                matchedText: chunk.text,
-                                matchedQuery: piece,
-                                score: score
-                            });
-                        }
-                    }
+                    queryVectors.push({
+                        text: piece,
+                        vector: Array.from(output.data)
+                    });
                 }
 
-                // Sort all matches by highest similarity score
-                allMatches.sort((a, b) => b.score - a.score);
+                // 3. Compare all searchable chunks against ALL query vectors
+                let scoredChunks = searchableChunks.map(chunk => {
+                    let highestScore = -1;
+                    let bestMatchedQueryPiece = "";
 
-                // Deduplicate to get the top 10 unique SNI codes
+                    for (const qObj of queryVectors) {
+                        const currentScore = cosineSimilarity(qObj.vector, chunk.vector);
+                        if (currentScore > highestScore) {
+                            highestScore = currentScore;
+                            bestMatchedQueryPiece = qObj.text;
+                        }
+                    }
+
+                    return { 
+                        ...chunk, 
+                        score: highestScore, 
+                        matchedQuery: bestMatchedQueryPiece 
+                    };
+                });
+                // Sort by highest similarity overall
+                scoredChunks.sort((a, b) => b.score - a.score);
+                // 4. Deduplicate to show top 10 unique SNI codes
                 let uniqueResults = [];
                 let seenSni = new Set();
-
-                for (const match of allMatches) {
-                    if (!seenSni.has(match.sni)) {
-                        uniqueResults.push(match);
-                        seenSni.add(match.sni);
+                
+                for (let chunk of scoredChunks) {
+                    if (!seenSni.has(chunk.sni)) {
+                        uniqueResults.push(chunk);
+                        seenSni.add(chunk.sni);
                         if (uniqueResults.length === 10) break; // Now captures top 10
                     }
                 }
@@ -195,7 +155,7 @@
                 statusEl.innerText = `Hittade ${uniqueResults.length} träffar baserat på ${queryPieces.length} sökdelar.`;
                 searchBtn.disabled = false;
 
-                // 4. Render results to the DOM
+                // 5. Render results, showing exactly which piece matched
                 uniqueResults.forEach(res => {
                     resultsEl.innerHTML += `
                         <div class="result">
@@ -216,14 +176,6 @@
             }
         });
 
-        // Trigger search on Enter key
-        searchInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter' && !searchBtn.disabled) {
-                searchBtn.click();
-            }
-        });
-
-        // Boot up the application
         init();
     </script>
 </body>
