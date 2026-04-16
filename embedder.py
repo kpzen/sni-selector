@@ -1,62 +1,93 @@
 import json
-from sentence_transformers import SentenceTransformer
+import os
+import torch
+import torch.nn.functional as F
+from transformers import AutoTokenizer
+from optimum.onnxruntime import ORTModelForCustomTasks
+from huggingface_hub import login
 
-# 1. Load the raw scraped data
-raw_file = "raw_data.json"
-print(f"Loading data from {raw_file}...")
+# 1. Authenticate with Hugging Face using your read-only token
+HF_TOKEN = "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"
+login(token=HF_TOKEN)
+
+# 2. Initialize the ONNX model exactly as we did in the test script
+repo_id = "Kristian-E/sentence-bert-swedish-onnx"
+print(f"Downloading/Loading model from {repo_id}...")
+tokenizer = AutoTokenizer.from_pretrained(repo_id)
+model = ORTModelForCustomTasks.from_pretrained(repo_id, file_name="model_quantized.onnx")
+
+def get_embedding(text):
+    """Helper function to calculate the exact mean-pooled vector."""
+    encoded_input = tokenizer([text], padding=True, truncation=True, max_length=384, return_tensors='pt')
+    
+    with torch.no_grad():
+        model_output = model(**encoded_input)
+        
+    # Extract tensor dynamically
+    token_embeddings = model_output.get("token_embeddings", model_output.get("last_hidden_state"))
+    if token_embeddings is None:
+        token_embeddings = list(model_output.values())[0]
+        
+    # Apply mean pooling
+    attention_mask = encoded_input['attention_mask']
+    input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+    sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
+    sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+    embeddings = sum_embeddings / sum_mask
+    
+    # L2 Normalization
+    embeddings = F.normalize(embeddings, p=2, dim=1)
+    
+    # Return as a simple python list and round to 4 decimal places
+    vector = embeddings[0].tolist()
+    return [round(num, 4) for num in vector]
+
+# 3. Load the raw scraped data
+raw_file = "raw_data.json" # Assuming testing raw data based on your file structure
+print(f"\nLoading data from {raw_file}...")
 with open(raw_file, "r", encoding="utf-8") as f:
     database = json.load(f)
 
-# 2. Initialize the MiniLM model 
-print("Loading paraphrase-multilingual-MiniLM-L12-v2 (this might take a moment)...")
-model = SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')
-
 total_chunks = 0
+print("Extracting title + first 3 covers, vectorizing, and rounding...")
 
-print("Grouping by 3, vectorizing, and rounding to 4 decimal places...")
 for item in database:
-    # Create a new empty list inside the existing item to hold our vectors
     item["chunks"] = []
     
-    # Combine the positive matches into a single list
-    lines_to_embed = item["covers"] + item["also_covers"] + item["examples"]
+    # Extract Title (safely)
+    title = item.get("title", "").strip().rstrip('.')
     
-    # Group the lines into chunks of 3
-    chunk_size = 3
-    for i in range(0, len(lines_to_embed), chunk_size):
-        # Grab up to 3 lines from the list
-        current_group = lines_to_embed[i:i+chunk_size]
+    # Extract first 3 lines of 'covers'
+    covers = item.get("covers", [])
+    first_three_covers = covers[:3]
+    clean_covers = [line.strip().rstrip('.') for line in first_three_covers if line.strip()]
+    
+    # Combine them
+    parts = []
+    if title:
+        parts.append(title)
+    parts.extend(clean_covers)
+    
+    if not parts:
+        continue # Skip if completely empty
         
-        # Clean up the lines (strip trailing periods so we don't get double punctuation)
-        clean_group = [line.strip().rstrip('.') for line in current_group if line.strip()]
+    chunk_text = ". ".join(parts) + "."
+    
+    # Generate the vector
+    rounded_vector = get_embedding(chunk_text)
+    
+    item["chunks"].append({
+        "text": chunk_text,
+        "vector": rounded_vector
+    })
+    total_chunks += 1
         
-        # Skip if the group is somehow empty
-        if not clean_group:
-            continue
-            
-        # Join the 3 items together with a period and a space
-        chunk_text = ". ".join(clean_group) + "."
-        
-        # Generate the 384-dimension vector from the grouped text
-        vector = model.encode(chunk_text).tolist()
-        
-        # ROUNDING: Truncate every float in the vector to 4 decimal places
-        rounded_vector = [round(num, 4) for num in vector]
-        
-        # Append the grouped text snippet and its rounded vector
-        item["chunks"].append({
-            "text": chunk_text,
-            "vector": rounded_vector
-        })
-        total_chunks += 1
-        
-    print(f"Processed {item['sni']}: added {len(item['chunks'])} grouped vectors.")
+    print(f"Processed {item.get('sni', 'Unknown')}: {chunk_text[:50]}...")
 
 # 4. Save the final payload
 output_file = "embedded_database.json"
 print(f"\nSaving database with {total_chunks} total vectors to {output_file}...")
 
-# MINIFICATION: We use separators=(',', ':') to strip all unnecessary whitespace
 with open(output_file, "w", encoding="utf-8") as f:
     json.dump(database, f, separators=(',', ':'), ensure_ascii=False)
 
