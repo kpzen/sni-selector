@@ -6,9 +6,6 @@ from transformers import AutoTokenizer
 from optimum.onnxruntime import ORTModelForCustomTasks
 from huggingface_hub import login
 
-# 1. Authenticate with Hugging Face using your read-only token
-HF_TOKEN = "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"
-login(token=HF_TOKEN)
 
 # 2. Initialize the ONNX model exactly as we did in the test script
 repo_id = "Kristian-E/sentence-bert-swedish-onnx"
