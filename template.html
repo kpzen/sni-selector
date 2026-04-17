@@ -48,6 +48,7 @@
         .scb-link { display: inline-block; margin-top: 10px; font-weight: bold; color: #005A9C; text-decoration: none; }
         .scb-link:hover { text-decoration: underline; }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/minisearch@7.2.0/dist/umd/index.min.js"></script>
 </head>
 <body>
 
@@ -69,6 +70,26 @@
         const queryInput = document.getElementById('query');
         const database = /*INJECT_DATABASE_HERE*/; 
 
+        // --- 1. SETUP KEYWORD INDEX (MINISEARCH) ---
+        // Prepare the data. We exclude 'does_not_cover' and 'chunks' from this indexing.
+        const msData = database.map(item => ({
+            sni: item.sni,
+            title: item.title,
+            covers_text: (item.covers || []).join(" "),
+            also_covers_text: (item.also_covers || []).join(" "),
+            examples_text: (item.examples || []).join(" ")
+        }));
+
+        const miniSearch = new MiniSearch({
+            fields: ['sni', 'title', 'covers_text', 'also_covers_text', 'examples_text'],
+            idField: 'sni',
+            // Custom tokenizer to perfectly handle Swedish letters like å, ä, ö
+            tokenize: (string) => string.toLowerCase().match(/[\p{L}\p{N}]+/gu) || [],
+            processTerm: (term) => term.toLowerCase()
+        });
+        miniSearch.addAll(msData);
+
+        // --- 2. SETUP VECTOR INDEX ---
         // Flatten the nested JSON into a single searchable array of chunks
         const searchableChunks = [];
         if (Array.isArray(database)) {
@@ -88,6 +109,7 @@
         }
 
         let extractor;
+
         function cosineSimilarity(vecA, vecB) {
             let dotProduct = 0, normA = 0, normB = 0;
             for (let i = 0; i < vecA.length; i++) {
@@ -106,7 +128,6 @@
                 }
 
                 statusEl.innerText = "Steg 1/2: Förbereder nedladdning av AI-modell...";
-                
                 // Load the specialized Swedish Sentence-BERT ONNX model with a progress callback
                 extractor = await pipeline('feature-extraction', 'Kristian-E/sentence-bert-swedish-onnx', {
                     progress_callback: (data) => {
@@ -117,7 +138,7 @@
                         }
                     }
                 });
-                
+
                 statusEl.innerText = "Steg 2/2: Optimerar AI för din enhet (Kan ta upp till en minut)...";
                 await extractor("warmup", { pooling: 'mean', normalize: true });
                 
@@ -142,86 +163,117 @@
             await new Promise(resolve => setTimeout(resolve, 50));
 
             try {
-                // 1. Split the query ONLY by period
+                // ==========================================
+                // TUNING PARAMETERS
+                // ==========================================
+                const VECTOR_WEIGHT = 0.5;  // Adjust if you want AI semantics to matter more
+                const KEYWORD_WEIGHT = 0.5; // Adjust if you want exact word matches to matter more
+                const RRF_K = 60;           // Standard smoothing constant for Reciprocal Rank Fusion
+                // ==========================================
+
+                // --- A. KEYWORD SEARCH (MiniSearch) ---
+                // fuzzy: 0.2 allows for slight typos in the user's search
+                const keywordResults = miniSearch.search(rawQueryText, { prefix: true, fuzzy: 0.2 });
+                const keywordRanks = {};
+                keywordResults.forEach((res, index) => {
+                    keywordRanks[res.id] = index + 1; 
+                });
+
+                // --- B. VECTOR SEARCH (Transformers.js) ---
                 const queryPieces = rawQueryText
                     .split(/\./g)
                     .map(piece => piece.trim())
                     .filter(piece => piece.length > 0);
 
-                // 2. Vectorize every valid piece of the input
                 const queryVectors = [];
                 for (const piece of queryPieces) {
                     const output = await extractor(piece, { pooling: 'mean', normalize: true });
-                    queryVectors.push({
-                        text: piece,
-                        vector: Array.from(output.data)
+                    queryVectors.push({ text: piece, vector: Array.from(output.data) });
+                }
+
+                // Calculate highest vector score for each SNI code
+                const vectorScores = {};
+                for (const chunk of searchableChunks) {
+                    let highestScore = -1;
+                    for (const qObj of queryVectors) {
+                        const currentScore = cosineSimilarity(qObj.vector, chunk.vector);
+                        if (currentScore > highestScore) highestScore = currentScore;
+                    }
+                    
+                    // Roll up chunk score to the parent SNI
+                    if (!vectorScores[chunk.sni] || highestScore > vectorScores[chunk.sni]) {
+                        vectorScores[chunk.sni] = highestScore;
+                    }
+                }
+
+                // Sort vector results to determine rank
+                const sortedVectorSNIs = Object.keys(vectorScores).sort((a, b) => vectorScores[b] - vectorScores[a]);
+                const vectorRanks = {};
+                sortedVectorSNIs.forEach((sni, index) => {
+                    vectorRanks[sni] = index + 1;
+                });
+
+                // --- C. RECIPROCAL RANK FUSION (RRF) ---
+                const allUniqueSNIs = new Set([...Object.keys(keywordRanks), ...Object.keys(vectorRanks)]);
+                let combinedResults = [];
+
+                for (const sni of allUniqueSNIs) {
+                    // If an SNI wasn't found in one of the searches, give it a heavily penalized rank of 1000
+                    const kRank = keywordRanks[sni] || 1000;
+                    const vRank = vectorRanks[sni] || 1000;
+
+                    // Weighted RRF Formula
+                    const rrfScore = (KEYWORD_WEIGHT * (1 / (RRF_K + kRank))) + (VECTOR_WEIGHT * (1 / (RRF_K + vRank)));
+
+                    combinedResults.push({
+                        sni: sni,
+                        score: rrfScore,
+                        vRank: vRank,
+                        kRank: kRank
                     });
                 }
 
-                // 3. Compare all searchable chunks against ALL query vectors
-                let scoredChunks = searchableChunks.map(chunk => {
-                    let highestScore = -1;
+                // Sort by the new fused score and take top 20
+                combinedResults.sort((a, b) => b.score - a.score);
+                const topResults = combinedResults.slice(0, 20);
 
-                    for (const qObj of queryVectors) {
-                        const currentScore = cosineSimilarity(qObj.vector, chunk.vector);
-                        if (currentScore > highestScore) {
-                            highestScore = currentScore;
-                        }
-                    }
-
-                    return { 
-                        ...chunk, 
-                        score: highestScore
-                    };
-                });
-
-                // Sort by highest similarity overall
-                scoredChunks.sort((a, b) => b.score - a.score);
-
-                // 4. Deduplicate to show top 20 unique SNI codes
-                let uniqueResults = [];
-                let seenSni = new Set();
-                
-                for (let chunk of scoredChunks) {
-                    if (!seenSni.has(chunk.sni)) {
-                        uniqueResults.push(chunk);
-                        seenSni.add(chunk.sni);
-                        if (uniqueResults.length === 20) break; 
-                    }
-                }
-
-                statusEl.innerText = `Visar de ${uniqueResults.length} mest relevanta SNI-koderna baserat på beskrivningen.`;
+                statusEl.innerText = `Visar de ${topResults.length} mest relevanta SNI-koderna baserat på beskrivningen.`;
                 searchBtn.disabled = false;
 
-                // 5. Render expandable results, fetching full details from the original database array
-                uniqueResults.forEach(res => {
+                // --- D. RENDER RESULTS ---
+                topResults.forEach(res => {
                     const fullData = database.find(item => item.sni === res.sni);
+                    if (!fullData) return;
+
                     let detailsHtml = "";
 
-                    if (fullData) {
-                        if (fullData.covers && fullData.covers.length > 0) {
-                            detailsHtml += `<h4>Omfattar:</h4><ul>${fullData.covers.map(c => `<li>${c}</li>`).join('')}</ul>`;
-                        }
-                        if (fullData.also_covers && fullData.also_covers.length > 0) {
-                            detailsHtml += `<h4>Omfattar även:</h4><ul>${fullData.also_covers.map(c => `<li>${c}</li>`).join('')}</ul>`;
-                        }
-                        if (fullData.does_not_cover && fullData.does_not_cover.length > 0) {
-                            detailsHtml += `<h4>Omfattar inte:</h4><ul>${fullData.does_not_cover.map(c => `<li>${c}</li>`).join('')}</ul>`;
-                        }
-                        if (fullData.examples && fullData.examples.length > 0) {
-                            detailsHtml += `<h4>Exempel på vad som ingår:</h4><ul>${fullData.examples.map(c => `<li>${c}</li>`).join('')}</ul>`;
-                        }
+                    if (fullData.covers && fullData.covers.length > 0) {
+                        detailsHtml += `<h4>Omfattar:</h4><ul>${fullData.covers.map(c => `<li>${c}</li>`).join('')}</ul>`;
                     }
+                    if (fullData.also_covers && fullData.also_covers.length > 0) {
+                        detailsHtml += `<h4>Omfattar även:</h4><ul>${fullData.also_covers.map(c => `<li>${c}</li>`).join('')}</ul>`;
+                    }
+                    if (fullData.does_not_cover && fullData.does_not_cover.length > 0) {
+                        detailsHtml += `<h4>Omfattar inte:</h4><ul>${fullData.does_not_cover.map(c => `<li>${c}</li>`).join('')}</ul>`;
+                    }
+                    if (fullData.examples && fullData.examples.length > 0) {
+                        detailsHtml += `<h4>Exempel på vad som ingår:</h4><ul>${fullData.examples.map(c => `<li>${c}</li>`).join('')}</ul>`;
+                    }
+
+                    // Render the fused score as a relative metric (scaled roughly out of the theoretical max)
+                    // Max possible score happens when rank=1 for both searches
+                    const maxPossibleScore = (KEYWORD_WEIGHT * (1 / (RRF_K + 1))) + (VECTOR_WEIGHT * (1 / (RRF_K + 1)));
+                    const displayScore = ((res.score / maxPossibleScore) * 100).toFixed(1);
 
                     resultsEl.innerHTML += `
                         <details class="result">
                             <summary>
-                                <div class="score">Träffsäkerhet: ${(res.score * 100).toFixed(1)}%</div>
-                                <div class="sni-title">${res.sni} - ${res.title}</div>
+                                <div class="score">Träffsäkerhet: ${displayScore}% </div>
+                                <div class="sni-title">${fullData.sni} - ${fullData.title}</div>
                             </summary>
                             <div class="sni-details">
                                 ${detailsHtml}
-                                <a class="scb-link" href="${res.url}" target="_blank">Läs mer på SCB:s webbplats ↗</a>
+                                <a class="scb-link" href="${fullData.url}" target="_blank">Läs mer på SCB:s webbplats ↗</a>
                             </div>
                         </details>
                     `;
