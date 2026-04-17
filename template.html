@@ -3,26 +3,36 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SNI AI-Sök Demo</title>
+    <title>SNI-sök</title>
     <style>
         body { font-family: system-ui, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; color: #333; }
         input { width: 100%; padding: 12px; margin-bottom: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
         button { width: 100%; padding: 12px; font-size: 16px; cursor: pointer; background: #005A9C; color: white; border: none; border-radius: 4px; }
         button:disabled { background: #999; }
         #status { color: #666; margin-bottom: 20px; font-style: italic; font-size: 14px; text-align: center; }
-        .result { background: #f4f4f5; padding: 15px; margin-bottom: 15px; border-radius: 6px; border-left: 4px solid #005A9C; }
-        .score { font-weight: bold; color: #005A9C; margin-bottom: 5px; font-size: 14px;}
-        .sni-title { font-weight: bold; font-size: 18px; margin-bottom: 5px; }
-        .sni-title a { color: #333; text-decoration: none; }
-        .sni-title a:hover { text-decoration: underline; }
-        .match-reason { font-size: 14px; color: #555; background: #e0e0e0; padding: 10px; border-radius: 4px; margin-top: 10px; line-height: 1.4; }
-        .query-part { color: #005A9C; font-weight: bold; }
+        
+        /* New styling for expandable results */
+        details.result { background: #f4f4f5; padding: 15px; margin-bottom: 15px; border-radius: 6px; border-left: 4px solid #005A9C; }
+        summary { cursor: pointer; list-style: none; position: relative; }
+        summary::-webkit-details-marker { display: none; }
+        summary:hover .sni-title { text-decoration: underline; }
+        
+        .score { font-weight: bold; color: #005A9C; margin-bottom: 5px; font-size: 14px; }
+        .sni-title { font-weight: bold; font-size: 18px; margin-bottom: 5px; color: #333; }
+        
+        .sni-details { margin-top: 15px; font-size: 14px; line-height: 1.5; color: #444; border-top: 1px solid #ddd; padding-top: 10px;}
+        .sni-details h4 { margin: 15px 0 5px 0; font-size: 14px; color: #222; }
+        .sni-details ul { margin: 0 0 10px 0; padding-left: 20px; }
+        .sni-details li { margin-bottom: 3px; }
+        
+        .scb-link { display: inline-block; margin-top: 10px; font-weight: bold; color: #005A9C; text-decoration: none; }
+        .scb-link:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
 
-    <h2>🤖 SCB SNI AI-Sök (Multi-Sök)</h2>
-    <p>Beskriv din verksamhet. Skriv gärna flera olika delar (t.ex. "Vi bygger bilar, säljer kaffe och odlar potatis").</p>
+    <h2>SNI-sök</h2>
+    <p>Beskriv din verksamhet med egna ord. Skriv gärna flera olika delar (t.ex. "Vi bygger bilar, säljer kaffe och odlar potatis").</p>
     
     <input type="text" id="query" placeholder="Beskriv din verksamhet här..." disabled>
     <button id="searchBtn" disabled>Sök</button>
@@ -75,9 +85,19 @@
                     throw new Error("Säkerhetsblockering! Du kan inte köra denna fil via 'file://' i Chrome. Kör via en webbserver eller GitHub Pages.");
                 }
 
-                statusEl.innerText = "Steg 1/2: Laddar ner AI-modell (ca 125 MB)...";
-                // Load the specialized Swedish Sentence-BERT ONNX model
-                extractor = await pipeline('feature-extraction', 'Kristian-E/sentence-bert-swedish-onnx');
+                statusEl.innerText = "Steg 1/2: Förbereder nedladdning av AI-modell...";
+                
+                // Load the specialized Swedish Sentence-BERT ONNX model with a progress callback
+                extractor = await pipeline('feature-extraction', 'Kristian-E/sentence-bert-swedish-onnx', {
+                    progress_callback: (data) => {
+                        if (data.status === 'downloading' && data.total) {
+                            const loadedMB = (data.loaded / (1024 * 1024)).toFixed(1);
+                            const totalMB = (data.total / (1024 * 1024)).toFixed(1);
+                            statusEl.innerText = `Steg 1/2: Laddar ner AI-modell (${loadedMB} / ${totalMB} MB)...`;
+                        }
+                    }
+                });
+                
                 statusEl.innerText = "Steg 2/2: Optimerar AI för din enhet (Kan ta upp till en minut)...";
                 await extractor("warmup", { pooling: 'mean', normalize: true });
                 
@@ -102,10 +122,9 @@
             await new Promise(resolve => setTimeout(resolve, 50));
 
             try {
-                // 1. Split the query by period, comma, or the words "och" / "samt" (with word boundaries)
-                // We use trim and filter to remove any empty strings resulting from the split
+                // 1. Split the query ONLY by period
                 const queryPieces = rawQueryText
-                    .split(/[\.,]|\boch\b|\bsamt\b/gi)
+                    .split(/\./g)
                     .map(piece => piece.trim())
                     .filter(piece => piece.length > 0);
 
@@ -122,25 +141,24 @@
                 // 3. Compare all searchable chunks against ALL query vectors
                 let scoredChunks = searchableChunks.map(chunk => {
                     let highestScore = -1;
-                    let bestMatchedQueryPiece = "";
 
                     for (const qObj of queryVectors) {
                         const currentScore = cosineSimilarity(qObj.vector, chunk.vector);
                         if (currentScore > highestScore) {
                             highestScore = currentScore;
-                            bestMatchedQueryPiece = qObj.text;
                         }
                     }
 
                     return { 
                         ...chunk, 
-                        score: highestScore, 
-                        matchedQuery: bestMatchedQueryPiece 
+                        score: highestScore
                     };
                 });
+
                 // Sort by highest similarity overall
                 scoredChunks.sort((a, b) => b.score - a.score);
-                // 4. Deduplicate to show top 10 unique SNI codes
+
+                // 4. Deduplicate to show top 20 unique SNI codes
                 let uniqueResults = [];
                 let seenSni = new Set();
                 
@@ -148,26 +166,47 @@
                     if (!seenSni.has(chunk.sni)) {
                         uniqueResults.push(chunk);
                         seenSni.add(chunk.sni);
-                        if (uniqueResults.length === 10) break; // Now captures top 10
+                        if (uniqueResults.length === 20) break; 
                     }
                 }
 
-                statusEl.innerText = `Hittade ${uniqueResults.length} träffar baserat på ${queryPieces.length} sökdelar.`;
+                statusEl.innerText = `Visar de ${uniqueResults.length} mest relevanta SNI-koderna baserat på beskrivningen.`;
                 searchBtn.disabled = false;
 
-                // 5. Render results, showing exactly which piece matched
+                // 5. Render expandable results, fetching full details from the original database array
                 uniqueResults.forEach(res => {
+                    const fullData = database.find(item => item.sni === res.sni);
+                    let detailsHtml = "";
+
+                    if (fullData) {
+                        if (fullData.covers && fullData.covers.length > 0) {
+                            detailsHtml += `<h4>Omfattar:</h4><ul>${fullData.covers.map(c => `<li>${c}</li>`).join('')}</ul>`;
+                        }
+                        if (fullData.also_covers && fullData.also_covers.length > 0) {
+                            detailsHtml += `<h4>Omfattar även:</h4><ul>${fullData.also_covers.map(c => `<li>${c}</li>`).join('')}</ul>`;
+                        }
+                        if (fullData.does_not_cover && fullData.does_not_cover.length > 0) {
+                            detailsHtml += `<h4>Omfattar inte:</h4><ul>${fullData.does_not_cover.map(c => `<li>${c}</li>`).join('')}</ul>`;
+                        }
+                        if (fullData.examples && fullData.examples.length > 0) {
+                            detailsHtml += `<h4>Exempel på vad som ingår:</h4><ul>${fullData.examples.map(c => `<li>${c}</li>`).join('')}</ul>`;
+                        }
+                    }
+
                     resultsEl.innerHTML += `
-                        <div class="result">
-                            <div class="score">Träffsäkerhet: ${(res.score * 100).toFixed(1)}%</div>
-                            <div class="sni-title"><a href="${res.url}" target="_blank">${res.sni} - ${res.title}</a></div>
-                            <div class="match-reason">
-                                Din sökdel "<span class="query-part">${res.matchedQuery}</span>" matchade:<br>
-                                <strong>"${res.matchedText}"</strong>
+                        <details class="result">
+                            <summary>
+                                <div class="score">Träffsäkerhet: ${(res.score * 100).toFixed(1)}%</div>
+                                <div class="sni-title">${res.sni} - ${res.title}</div>
+                            </summary>
+                            <div class="sni-details">
+                                ${detailsHtml}
+                                <a class="scb-link" href="${res.url}" target="_blank">Läs mer på SCB:s webbplats ↗</a>
                             </div>
-                        </div>
+                        </details>
                     `;
                 });
+
             } catch (error) {
                 console.error("Search Error:", error);
                 statusEl.innerText = "Sökningen misslyckades: " + error.message;
