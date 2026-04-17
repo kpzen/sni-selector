@@ -13,9 +13,29 @@
         
         /* New styling for expandable results */
         details.result { background: #f4f4f5; padding: 15px; margin-bottom: 15px; border-radius: 6px; border-left: 4px solid #005A9C; }
-        summary { cursor: pointer; list-style: none; position: relative; }
+        
+        /* Added padding to prevent text from overlapping the plus/minus icon */
+        summary { cursor: pointer; list-style: none; position: relative; padding-right: 30px; }
         summary::-webkit-details-marker { display: none; }
         summary:hover .sni-title { text-decoration: underline; }
+        
+        /* The Plus icon for collapsed state */
+        summary::after {
+            content: '+';
+            position: absolute;
+            right: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 24px;
+            font-weight: bold;
+            color: #005A9C;
+            line-height: 1;
+        }
+        
+        /* The Minus icon for expanded state */
+        details[open] summary::after {
+            content: '−'; /* Using a minus sign instead of hyphen for better vertical alignment */
+        }
         
         .score { font-weight: bold; color: #005A9C; margin-bottom: 5px; font-size: 14px; }
         .sni-title { font-weight: bold; font-size: 18px; margin-bottom: 5px; color: #333; }
