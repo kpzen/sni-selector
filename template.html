@@ -141,7 +141,7 @@
                 // Load the specialized Swedish Sentence-BERT ONNX model with a progress callback
                 extractor = await pipeline('feature-extraction', 'Kristian-E/sentence-bert-swedish-onnx', {
                     progress_callback: (data) => {
-                        if (data.status === 'downloading' && data.total) {
+                        if (data.status === 'progress' && data.total) {
                             const loadedMB = (data.loaded / (1024 * 1024)).toFixed(1);
                             const totalMB = (data.total / (1024 * 1024)).toFixed(1);
                             statusEl.innerText = `Steg 1/2: Laddar ner AI-modell (${loadedMB} / ${totalMB} MB)...`;
