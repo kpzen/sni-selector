@@ -5,18 +5,31 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SNI-sök</title>
     <style>
-        /* Flexbox layout to push footer to bottom */
-        html, body { height: 100%; margin: 0; }
+        /* Force the layout to span at least the full screen */
+        html, body { 
+            height: 100%; 
+            margin: 0; 
+            padding: 0; 
+        }
+
         body { 
             font-family: system-ui, sans-serif; 
-            max-width: 600px; 
-            margin: 0 auto; 
-            padding: 20px; 
             color: #333; 
             display: flex;
             flex-direction: column;
         }
-        .content-wrapper { flex: 1 0 auto; }
+
+        /* This wrapper ensures the search UI takes up the full initial screen. 
+           The footer will only appear once the user scrolls down.
+        */
+        .content-wrapper { 
+            flex: 1 0 auto; 
+            max-width: 600px; 
+            margin: 0 auto; 
+            padding: 40px 20px;
+            min-height: 100vh;
+            box-sizing: border-box;
+        }
         
         input, textarea { 
             width: 100%; 
@@ -64,14 +77,15 @@
         .scb-link { display: inline-block; margin-top: 10px; font-weight: bold; color: #005A9C; text-decoration: none; }
         .scb-link:hover { text-decoration: underline; }
 
+        /* Footer styling - tucked safely below the fold */
         footer { 
             flex-shrink: 0;
-            margin-top: 50px; 
-            padding: 20px 0; 
+            padding: 60px 20px; 
             text-align: center; 
             font-size: 11px; 
-            color: #888; 
-            border-top: 1px solid #eee; 
+            color: #aaa; 
+            border-top: 1px solid #f0f0f0; 
+            background: #fafafa;
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/minisearch@7.2.0/dist/umd/index.min.js"></script>
@@ -122,6 +136,7 @@
 
         let currentResults = [];
 
+        // Initialize keyword search index
         const msData = database.map(item => ({
             sni: item.sni,
             title: item.title,
