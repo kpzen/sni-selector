@@ -5,7 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SNI-sök</title>
     <style>
-        body { font-family: system-ui, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; color: #333; }
+        /* Flexbox layout to push footer to bottom */
+        html, body { height: 100%; margin: 0; }
+        body { 
+            font-family: system-ui, sans-serif; 
+            max-width: 600px; 
+            margin: 0 auto; 
+            padding: 20px; 
+            color: #333; 
+            display: flex;
+            flex-direction: column;
+        }
+        .content-wrapper { flex: 1 0 auto; }
+        
         input, textarea { 
             width: 100%; 
             padding: 12px; 
@@ -51,31 +63,52 @@
         
         .scb-link { display: inline-block; margin-top: 10px; font-weight: bold; color: #005A9C; text-decoration: none; }
         .scb-link:hover { text-decoration: underline; }
+
+        footer { 
+            flex-shrink: 0;
+            margin-top: 50px; 
+            padding: 20px 0; 
+            text-align: center; 
+            font-size: 11px; 
+            color: #888; 
+            border-top: 1px solid #eee; 
+        }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/minisearch@7.2.0/dist/umd/index.min.js"></script>
 </head>
 <body>
 
-    <h2>SNI-sök</h2>
-    <p>Beskriv din verksamhet med egna ord. Till exempel "Verksamheten består av en ambulerande food truck som serverar vedugnspizza, med en fullt utrustad hundtvättsstation integrerad på baksidan."</p>
-    
-    <textarea id="query" placeholder="Beskriv din verksamhet här..." rows="2" disabled></textarea>
-    <button id="searchBtn" disabled>Sök</button>
-    <div id="status">Laddar databas och AI-modeller...</div>
-    
-    <div id="viewToggle" style="display: none; margin-bottom: 20px; text-align: center; font-size: 15px; background: #eef5fa; padding: 10px; border-radius: 6px;">
-        <span style="font-weight: bold; margin-right: 15px;">Sortera resultaten efter:</span>
-        <label style="margin-right: 15px; cursor: pointer;">
-            <input type="radio" name="resultView" value="rerank" checked>
-            Cross-Encoder Rerank (Smartast)
-        </label>
-        <label style="cursor: pointer;">
-            <input type="radio" name="resultView" value="rrf">
-            RRF (Nyckelord + Vektor)
-        </label>
+    <div class="content-wrapper">
+        <h2>SNI-sök</h2>
+        <p>Beskriv din verksamhet med egna ord. Till exempel "Verksamheten består av en ambulerande food truck som serverar vedugnspizza, med en fullt utrustad hundtvättsstation integrerad på baksidan."</p>
+        
+        <textarea id="query" placeholder="Beskriv din verksamhet här..." rows="2" disabled></textarea>
+        <button id="searchBtn" disabled>Sök</button>
+        <div id="status">Laddar databas och AI-modeller...</div>
+        
+        <div id="viewToggle" style="display: none; margin-bottom: 20px; text-align: center; font-size: 15px; background: #eef5fa; padding: 10px; border-radius: 6px;">
+            <span style="font-weight: bold; margin-right: 15px;">Sortera resultaten efter:</span>
+            <label style="margin-right: 15px; cursor: pointer;">
+                <input type="radio" name="resultView" value="rerank" checked>
+                Cross-Encoder Rerank (Smartast)
+            </label>
+            <label style="cursor: pointer;">
+                <input type="radio" name="resultView" value="rrf">
+                RRF (Nyckelord + Vektor)
+            </label>
+        </div>
+
+        <div id="results"></div>
     </div>
 
-    <div id="results"></div>
+    <footer>
+        <p>
+            Denna demo använder 
+            <a href="https://huggingface.co/jinaai/jina-reranker-v2-base-multilingual" target="_blank" style="color: #777; text-decoration: underline;">jina-reranker-v2-base-multilingual</a> 
+            av Jina AI, licensierad under 
+            <a href="https://creativecommons.org/licenses/by-nc/4.0/" target="_blank" style="color: #777; text-decoration: underline;">CC BY-NC 4.0</a>.
+        </p>
+    </footer>
 
     <script type="module">
         import { pipeline, AutoTokenizer, AutoModelForSequenceClassification, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.1.0';
@@ -87,7 +120,7 @@
         const queryInput = document.getElementById('query');
         const database = /*INJECT_DATABASE_HERE*/; 
 
-        let currentResults = []; // Stores the search results in memory
+        let currentResults = [];
 
         const msData = database.map(item => ({
             sni: item.sni,
@@ -160,11 +193,9 @@
                 statusEl.innerText = "Steg 2/3: Laddar och patchar Rerank-konfiguration...";
                 
                 const model_id = 'jinaai/jina-reranker-v2-base-multilingual';
-                
                 const configRes = await fetch(`https://huggingface.co/${model_id}/resolve/main/config.json`);
                 const configJson = await configRes.json();
                 configJson.model_type = 'xlm-roberta'; 
-                // Instruct the model to output raw logits
                 configJson.problem_type = 'regression'; 
 
                 const rerankConfig = {
@@ -185,20 +216,13 @@
                     rerankTokenizer = await AutoTokenizer.from_pretrained(model_id);
                     rerankModel = await AutoModelForSequenceClassification.from_pretrained(model_id, rerankConfig);
                 } catch (error) {
-                    console.warn("WebGPU misslyckades. Försöker fallback till WASM (CPU)...", error);
-                    statusEl.innerText = "WebGPU ej tillgängligt. Laddar Rerank-modell via standardprocessor (WASM)...";
-                    
                     rerankConfig.device = 'wasm';
-                    try {
-                        rerankTokenizer = await AutoTokenizer.from_pretrained(model_id);
-                        rerankModel = await AutoModelForSequenceClassification.from_pretrained(model_id, rerankConfig);
-                    } catch (fallbackError) {
-                        console.error("WASM fallback misslyckades.", fallbackError);
-                    }
+                    rerankTokenizer = await AutoTokenizer.from_pretrained(model_id);
+                    rerankModel = await AutoModelForSequenceClassification.from_pretrained(model_id, rerankConfig);
                 }
 
                 activeInitStep = 3;
-                statusEl.innerText = "Steg 3/3: Optimerar AI för din enhet (Kan ta upp till en minut)...";
+                statusEl.innerText = "Steg 3/3: Optimerar AI för din enhet...";
                 await extractor("warmup", { pooling: 'mean', normalize: true });
                 
                 activeInitStep = 4;
@@ -206,7 +230,6 @@
                 searchBtn.disabled = false;
                 queryInput.disabled = false;
             } catch (error) {
-                console.error("Init Error:", error);
                 statusEl.innerText = "Ett fel uppstod: " + error.message;
                 statusEl.style.color = "red";
             }
@@ -277,72 +300,39 @@
 
                 if (rerankModel && topResults.length > 0) {
                     const safeQuery = rawQueryText.substring(0, 500);
-
-                    // Loop through the results sequentially instead of doing a single batch
                     for (let i = 0; i < topResults.length; i++) {
-                        // 1. Update the UI text
                         statusEl.innerText = `Analyserar ${i + 1} av ${topResults.length} resultat med Cross-Encoder...`;
-                        
-                        // 2. CRITICAL: Yield control back to the browser for a few milliseconds 
-                        // so it has time to visually update the text on the screen before the AI freezes the thread again.
                         await new Promise(resolve => setTimeout(resolve, 20));
-
                         const candidate = topResults[i];
                         const fullData = database.find(item => item.sni === candidate.sni);
                         const documentText = `${fullData.sni}: ${fullData.title}. ${(fullData.covers || []).join(' ')}`;
                         const safeDocumentText = documentText.substring(0, 1000);
-
                         try {
-                            // 3. Tokenize just this single pair
-                            const inputs = rerankTokenizer(safeQuery, {
-                                text_pair: safeDocumentText,
-                                padding: true,
-                                truncation: true
-                            });
-
-                            // 4. Run the model for this single item
+                            const inputs = rerankTokenizer(safeQuery, { text_pair: safeDocumentText, padding: true, truncation: true });
                             const { logits } = await rerankModel(inputs);
-                            
-                            // Extract the raw float score and attach it to our candidate
                             candidate.rerank_score = logits.data[0];
-
                         } catch (error) {
-                            console.error(`Reranking misslyckades för index ${i}.`, error);
-                            candidate.rerank_score = -999; // Fallback so it drops to the bottom if it crashes
+                            candidate.rerank_score = -999;
                         }
                     }
-
-                    // Sort the results based on the new semantic scores now that the loop is done
                     topResults.sort((a, b) => b.rerank_score - a.rerank_score);
                 }
 
-                // Assign the final parsed results to our global variable
                 currentResults = topResults;
-
                 statusEl.innerText = `Visar de ${topResults.length} mest relevanta SNI-koderna baserat på beskrivningen.`;
                 searchBtn.disabled = false;
-                
-                // Show the radio buttons now that we have data
                 document.getElementById('viewToggle').style.display = 'block';
-
-                // Call our new render function to display the list
                 renderResults();
 
             } catch (error) {
-                console.error("Search Error:", error);
                 statusEl.innerText = "Sökningen misslyckades: " + error.message;
-                statusEl.style.color = "red";
                 searchBtn.disabled = false;
             }
         });
 
         function renderResults() {
             const viewMode = document.querySelector('input[name="resultView"]:checked').value;
-            
-            // Create a shallow copy of the results so we don't break the original array
             let sortedResults = [...currentResults];
-
-            // Sort the array based on the selected mode
             if (viewMode === 'rerank') {
                 sortedResults.sort((a, b) => (b.rerank_score || -999) - (a.rerank_score || -999));
             } else {
@@ -350,41 +340,16 @@
             }
 
             resultsEl.innerHTML = "";
-
-            const KEYWORD_WEIGHT = 0.4; 
-            const VECTOR_WEIGHT = 0.6; 
             const RRF_K = 60;
-            const maxPossibleScore = (KEYWORD_WEIGHT * (1 / (RRF_K + 1))) + (VECTOR_WEIGHT * (1 / (RRF_K + 1)));
+            const maxPossibleScore = (0.4 * (1 / (RRF_K + 1))) + (0.6 * (1 / (RRF_K + 1)));
 
             sortedResults.forEach((res, rankIdx) => {
                 const fullData = database.find(item => item.sni === res.sni);
                 if (!fullData) return;
-
-                let detailsHtml = "";
-                if (fullData.covers && fullData.covers.length > 0) {
-                    detailsHtml += `<h4>Omfattar:</h4><ul>${fullData.covers.map(c => `<li>${c}</li>`).join('')}</ul>`;
-                }
-                if (fullData.also_covers && fullData.also_covers.length > 0) {
-                    detailsHtml += `<h4>Omfattar även:</h4><ul>${fullData.also_covers.map(c => `<li>${c}</li>`).join('')}</ul>`;
-                }
-                if (fullData.does_not_cover && fullData.does_not_cover.length > 0) {
-                    detailsHtml += `<h4>Omfattar inte:</h4><ul>${fullData.does_not_cover.map(c => `<li>${c}</li>`).join('')}</ul>`;
-                }
-                if (fullData.examples && fullData.examples.length > 0) {
-                    detailsHtml += `<h4>Exempel på vad som ingår:</h4><ul>${fullData.examples.map(c => `<li>${c}</li>`).join('')}</ul>`;
-                }
-
-                let scoreHtml = "";
                 const displayRrfScore = ((res.score / maxPossibleScore) * 100).toFixed(1);
-                
-                if (viewMode === 'rerank' && res.rerank_score !== undefined) {
-                    scoreHtml = `Semantisk Relevans (Cross-Encoder): ${res.rerank_score.toFixed(3)} <span style="color:#666; font-weight:normal; margin-left: 8px;">(RRF: ${displayRrfScore}%)</span>`;
-                } else {
-                    scoreHtml = `Träffsäkerhet (RRF): ${displayRrfScore}%`;
-                    if (res.rerank_score !== undefined) {
-                        scoreHtml += `<span style="color:#666; font-weight:normal; margin-left: 8px;">(Reranker: ${res.rerank_score.toFixed(2)})</span>`;
-                    }
-                }
+                let scoreHtml = viewMode === 'rerank' && res.rerank_score !== undefined 
+                    ? `Semantisk Relevans (Cross-Encoder): ${res.rerank_score.toFixed(3)} <span style="color:#666; font-weight:normal; margin-left: 8px;">(RRF: ${displayRrfScore}%)</span>`
+                    : `Träffsäkerhet (RRF): ${displayRrfScore}% ${res.rerank_score !== undefined ? `<span style="color:#666; font-weight:normal; margin-left: 8px;">(Reranker: ${res.rerank_score.toFixed(2)})</span>` : ''}`;
 
                 resultsEl.innerHTML += `
                     <details class="result">
@@ -393,7 +358,10 @@
                             <div class="sni-title">${fullData.sni} - ${fullData.title}</div>
                         </summary>
                         <div class="sni-details">
-                            ${detailsHtml}
+                            ${fullData.covers?.length ? `<h4>Omfattar:</h4><ul>${fullData.covers.map(c => `<li>${c}</li>`).join('')}</ul>` : ''}
+                            ${fullData.also_covers?.length ? `<h4>Omfattar även:</h4><ul>${fullData.also_covers.map(c => `<li>${c}</li>`).join('')}</ul>` : ''}
+                            ${fullData.does_not_cover?.length ? `<h4>Omfattar inte:</h4><ul>${fullData.does_not_cover.map(c => `<li>${c}</li>`).join('')}</ul>` : ''}
+                            ${fullData.examples?.length ? `<h4>Exempel på vad som ingår:</h4><ul>${fullData.examples.map(c => `<li>${c}</li>`).join('')}</ul>` : ''}
                             <a class="scb-link" href="${fullData.url}" target="_blank">Läs mer på SCB:s webbplats ↗</a>
                         </div>
                     </details>
@@ -401,13 +369,8 @@
             });
         }
 
-        // Listen for changes from the radio buttons
         document.querySelectorAll('input[name="resultView"]').forEach(radio => {
-            radio.addEventListener('change', () => {
-                if (currentResults.length > 0) {
-                    renderResults();
-                }
-            });
+            radio.addEventListener('change', () => currentResults.length && renderResults());
         });
 
         init();
