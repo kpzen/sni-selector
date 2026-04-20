@@ -21,15 +21,12 @@
         button:disabled { background: #999; }
         #status { color: #666; margin-bottom: 20px; font-style: italic; font-size: 14px; text-align: center; }
         
-        /* New styling for expandable results */
         details.result { background: #f4f4f5; padding: 15px; margin-bottom: 15px; border-radius: 6px; border-left: 4px solid #005A9C; }
         
-        /* Added padding to prevent text from overlapping the plus/minus icon */
         summary { cursor: pointer; list-style: none; position: relative; padding-right: 30px; }
         summary::-webkit-details-marker { display: none; }
         summary:hover .sni-title { text-decoration: underline; }
         
-        /* The Plus icon for collapsed state */
         summary::after {
             content: '+';
             position: absolute;
@@ -42,10 +39,7 @@
             line-height: 1;
         }
         
-        /* The Minus icon for expanded state */
-        details[open] summary::after {
-            content: '−'; /* Using a minus sign instead of hyphen for better vertical alignment */
-        }
+        details[open] summary::after { content: '−'; }
         
         .score { font-weight: bold; color: #005A9C; margin-bottom: 5px; font-size: 14px; }
         .sni-title { font-weight: bold; font-size: 18px; margin-bottom: 5px; color: #333; }
@@ -63,15 +57,28 @@
 <body>
 
     <h2>SNI-sök</h2>
-    <p>Beskriv din verksamhet med egna ord. Till exempel "Verksamheten består av en ambulerande food truck som serverar vedugnspizza, med en fullt utrustad hundtvättsstation integrerad på baksidan. Vi parkerar vid stadens stora hundrastgårdar så att ägarna kan äta snabbmat medan de tvättar hunden."</p>
+    <p>Beskriv din verksamhet med egna ord. Till exempel "Verksamheten består av en ambulerande food truck som serverar vedugnspizza, med en fullt utrustad hundtvättsstation integrerad på baksidan."</p>
     
     <textarea id="query" placeholder="Beskriv din verksamhet här..." rows="2" disabled></textarea>
     <button id="searchBtn" disabled>Sök</button>
-    <div id="status">Laddar databas och AI-modell...</div>
+    <div id="status">Laddar databas och AI-modeller...</div>
+    
+    <div id="viewToggle" style="display: none; margin-bottom: 20px; text-align: center; font-size: 15px; background: #eef5fa; padding: 10px; border-radius: 6px;">
+        <span style="font-weight: bold; margin-right: 15px;">Sortera resultaten efter:</span>
+        <label style="margin-right: 15px; cursor: pointer;">
+            <input type="radio" name="resultView" value="rerank" checked>
+            Cross-Encoder Rerank (Smartast)
+        </label>
+        <label style="cursor: pointer;">
+            <input type="radio" name="resultView" value="rrf">
+            RRF (Nyckelord + Vektor)
+        </label>
+    </div>
+
     <div id="results"></div>
 
     <script type="module">
-        import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
+        import { pipeline, AutoTokenizer, AutoModelForSequenceClassification, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.1.0';
         env.allowLocalModels = false;
 
         const statusEl = document.getElementById('status');
@@ -80,8 +87,8 @@
         const queryInput = document.getElementById('query');
         const database = /*INJECT_DATABASE_HERE*/; 
 
-        // --- 1. SETUP KEYWORD INDEX (MINISEARCH) ---
-        // Prepare the data. We exclude 'does_not_cover' and 'chunks' from this indexing.
+        let currentResults = []; // Stores the search results in memory
+
         const msData = database.map(item => ({
             sni: item.sni,
             title: item.title,
@@ -89,18 +96,14 @@
             also_covers_text: (item.also_covers || []).join(" "),
             examples_text: (item.examples || []).join(" ")
         }));
-
         const miniSearch = new MiniSearch({
             fields: ['sni', 'title', 'covers_text', 'also_covers_text', 'examples_text'],
             idField: 'sni',
-            // Custom tokenizer to perfectly handle Swedish letters like å, ä, ö
             tokenize: (string) => string.toLowerCase().match(/[\p{L}\p{N}]+/gu) || [],
             processTerm: (term) => term.toLowerCase()
         });
         miniSearch.addAll(msData);
 
-        // --- 2. SETUP VECTOR INDEX ---
-        // Flatten the nested JSON into a single searchable array of chunks
         const searchableChunks = [];
         if (Array.isArray(database)) {
             database.forEach(sniObj => {
@@ -119,6 +122,9 @@
         }
 
         let extractor;
+        let rerankTokenizer;
+        let rerankModel;
+        let activeInitStep = 0;
 
         function cosineSimilarity(vecA, vecB) {
             let dotProduct = 0, normA = 0, normB = 0;
@@ -134,24 +140,68 @@
         async function init() {
             try {
                 if (window.location.protocol === 'file:') {
-                    throw new Error("Säkerhetsblockering! Du kan inte köra denna fil via 'file://' i Chrome. Kör via en webbserver eller GitHub Pages.");
+                    throw new Error("Säkerhetsblockering! Kör via en webbserver eller GitHub Pages.");
                 }
 
-                statusEl.innerText = "Steg 1/2: Förbereder nedladdning av AI-modell...";
-                // Load the specialized Swedish Sentence-BERT ONNX model with a progress callback
+                activeInitStep = 1;
+                statusEl.innerText = "Steg 1/3: Förbereder nedladdning av vektor-modell...";
                 extractor = await pipeline('feature-extraction', 'Kristian-E/sentence-bert-swedish-onnx', {
                     progress_callback: (data) => {
+                        if (activeInitStep !== 1) return; 
                         if (data.status === 'progress' && data.total) {
                             const loadedMB = (data.loaded / (1024 * 1024)).toFixed(1);
                             const totalMB = (data.total / (1024 * 1024)).toFixed(1);
-                            statusEl.innerText = `Steg 1/2: Laddar ner AI-modell (${loadedMB} / ${totalMB} MB)...`;
+                            statusEl.innerText = `Steg 1/3: Laddar ner vektor-modell (${loadedMB} / ${totalMB} MB)...`;
                         }
                     }
                 });
 
-                statusEl.innerText = "Steg 2/2: Optimerar AI för din enhet (Kan ta upp till en minut)...";
+                activeInitStep = 2;
+                statusEl.innerText = "Steg 2/3: Laddar och patchar Rerank-konfiguration...";
+                
+                const model_id = 'jinaai/jina-reranker-v2-base-multilingual';
+                
+                const configRes = await fetch(`https://huggingface.co/${model_id}/resolve/main/config.json`);
+                const configJson = await configRes.json();
+                configJson.model_type = 'xlm-roberta'; 
+                // Instruct the model to output raw logits
+                configJson.problem_type = 'regression'; 
+
+                const rerankConfig = {
+                    device: 'webgpu',
+                    dtype: 'q8',
+                    config: configJson, 
+                    progress_callback: (data) => {
+                        if (activeInitStep !== 2) return; 
+                        if (data.status === 'progress' && data.total) {
+                            const loadedMB = (data.loaded / (1024 * 1024)).toFixed(1);
+                            const totalMB = (data.total / (1024 * 1024)).toFixed(1);
+                            statusEl.innerText = `Steg 2/3: Laddar ner Rerank-modell (${loadedMB} / ${totalMB} MB)...`;
+                        }
+                    }
+                };
+
+                try {
+                    rerankTokenizer = await AutoTokenizer.from_pretrained(model_id);
+                    rerankModel = await AutoModelForSequenceClassification.from_pretrained(model_id, rerankConfig);
+                } catch (error) {
+                    console.warn("WebGPU misslyckades. Försöker fallback till WASM (CPU)...", error);
+                    statusEl.innerText = "WebGPU ej tillgängligt. Laddar Rerank-modell via standardprocessor (WASM)...";
+                    
+                    rerankConfig.device = 'wasm';
+                    try {
+                        rerankTokenizer = await AutoTokenizer.from_pretrained(model_id);
+                        rerankModel = await AutoModelForSequenceClassification.from_pretrained(model_id, rerankConfig);
+                    } catch (fallbackError) {
+                        console.error("WASM fallback misslyckades.", fallbackError);
+                    }
+                }
+
+                activeInitStep = 3;
+                statusEl.innerText = "Steg 3/3: Optimerar AI för din enhet (Kan ta upp till en minut)...";
                 await extractor("warmup", { pooling: 'mean', normalize: true });
                 
+                activeInitStep = 4;
                 statusEl.innerText = "Klar! Skriv in en sökning.";
                 searchBtn.disabled = false;
                 queryInput.disabled = false;
@@ -162,13 +212,10 @@
             }
         }
 
-        // Allow the user to press Enter to search
         queryInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault(); // Prevent a new line from being drawn
-                if (!searchBtn.disabled) {
-                    searchBtn.click(); // Trigger the search button
-                }
+                e.preventDefault();
+                if (!searchBtn.disabled) searchBtn.click();
             }
         });
 
@@ -176,42 +223,29 @@
             const rawQueryText = queryInput.value;
             if (!rawQueryText) return;
 
-            statusEl.innerText = "Söker...";
+            statusEl.innerText = "Söker genom bas-index...";
             resultsEl.innerHTML = "";
+            document.getElementById('viewToggle').style.display = 'none';
             searchBtn.disabled = true;
 
             await new Promise(resolve => setTimeout(resolve, 50));
 
             try {
-                // ==========================================
-                // TUNING PARAMETERS
-                // ==========================================
-                const VECTOR_WEIGHT = 0.6;  // 60% weight to AI semantics
-                const KEYWORD_WEIGHT = 0.4; // 40% weight to exact word matches
-                const RRF_K = 60;           // Standard smoothing constant for Reciprocal Rank Fusion
-                // ==========================================
+                const VECTOR_WEIGHT = 0.6;  
+                const KEYWORD_WEIGHT = 0.4; 
+                const RRF_K = 60;           
 
-                // --- A. KEYWORD SEARCH (MiniSearch) ---
-                // fuzzy: 0.2 allows for slight typos in the user's search
                 const keywordResults = miniSearch.search(rawQueryText, { prefix: true, fuzzy: 0.2 });
                 const keywordRanks = {};
-                keywordResults.forEach((res, index) => {
-                    keywordRanks[res.id] = index + 1; 
-                });
+                keywordResults.forEach((res, index) => { keywordRanks[res.id] = index + 1; });
 
-                // --- B. VECTOR SEARCH (Transformers.js) ---
-                const queryPieces = rawQueryText
-                    .split(/\./g)
-                    .map(piece => piece.trim())
-                    .filter(piece => piece.length > 0);
-
+                const queryPieces = rawQueryText.split(/\./g).map(p => p.trim()).filter(p => p.length > 0);
                 const queryVectors = [];
                 for (const piece of queryPieces) {
                     const output = await extractor(piece, { pooling: 'mean', normalize: true });
                     queryVectors.push({ text: piece, vector: Array.from(output.data) });
                 }
 
-                // Calculate highest vector score for each SNI code
                 const vectorScores = {};
                 for (const chunk of searchableChunks) {
                     let highestScore = -1;
@@ -219,85 +253,80 @@
                         const currentScore = cosineSimilarity(qObj.vector, chunk.vector);
                         if (currentScore > highestScore) highestScore = currentScore;
                     }
-                    
-                    // Roll up chunk score to the parent SNI
                     if (!vectorScores[chunk.sni] || highestScore > vectorScores[chunk.sni]) {
                         vectorScores[chunk.sni] = highestScore;
                     }
                 }
 
-                // Sort vector results to determine rank
                 const sortedVectorSNIs = Object.keys(vectorScores).sort((a, b) => vectorScores[b] - vectorScores[a]);
                 const vectorRanks = {};
-                sortedVectorSNIs.forEach((sni, index) => {
-                    vectorRanks[sni] = index + 1;
-                });
+                sortedVectorSNIs.forEach((sni, index) => { vectorRanks[sni] = index + 1; });
 
-                // --- C. RECIPROCAL RANK FUSION (RRF) ---
                 const allUniqueSNIs = new Set([...Object.keys(keywordRanks), ...Object.keys(vectorRanks)]);
                 let combinedResults = [];
 
                 for (const sni of allUniqueSNIs) {
-                    // If an SNI wasn't found in one of the searches, give it a heavily penalized rank of 1000
                     const kRank = keywordRanks[sni] || 1000;
                     const vRank = vectorRanks[sni] || 1000;
-
-                    // Weighted RRF Formula
                     const rrfScore = (KEYWORD_WEIGHT * (1 / (RRF_K + kRank))) + (VECTOR_WEIGHT * (1 / (RRF_K + vRank)));
-
-                    combinedResults.push({
-                        sni: sni,
-                        score: rrfScore,
-                        vRank: vRank,
-                        kRank: kRank
-                    });
+                    combinedResults.push({ sni: sni, score: rrfScore });
                 }
 
-                // Sort by the new fused score and take top 20
                 combinedResults.sort((a, b) => b.score - a.score);
-                const topResults = combinedResults.slice(0, 20);
+                let topResults = combinedResults.slice(0, 20);
+
+                if (rerankModel && topResults.length > 0) {
+                    const safeQuery = rawQueryText.substring(0, 500);
+
+                    // Loop through the results sequentially instead of doing a single batch
+                    for (let i = 0; i < topResults.length; i++) {
+                        // 1. Update the UI text
+                        statusEl.innerText = `Analyserar ${i + 1} av ${topResults.length} resultat med Cross-Encoder...`;
+                        
+                        // 2. CRITICAL: Yield control back to the browser for a few milliseconds 
+                        // so it has time to visually update the text on the screen before the AI freezes the thread again.
+                        await new Promise(resolve => setTimeout(resolve, 20));
+
+                        const candidate = topResults[i];
+                        const fullData = database.find(item => item.sni === candidate.sni);
+                        const documentText = `${fullData.sni}: ${fullData.title}. ${(fullData.covers || []).join(' ')}`;
+                        const safeDocumentText = documentText.substring(0, 1000);
+
+                        try {
+                            // 3. Tokenize just this single pair
+                            const inputs = rerankTokenizer(safeQuery, {
+                                text_pair: safeDocumentText,
+                                padding: true,
+                                truncation: true
+                            });
+
+                            // 4. Run the model for this single item
+                            const { logits } = await rerankModel(inputs);
+                            
+                            // Extract the raw float score and attach it to our candidate
+                            candidate.rerank_score = logits.data[0];
+
+                        } catch (error) {
+                            console.error(`Reranking misslyckades för index ${i}.`, error);
+                            candidate.rerank_score = -999; // Fallback so it drops to the bottom if it crashes
+                        }
+                    }
+
+                    // Sort the results based on the new semantic scores now that the loop is done
+                    topResults.sort((a, b) => b.rerank_score - a.rerank_score);
+                }
+
+                // Assign the final parsed results to our global variable
+                currentResults = topResults;
 
                 statusEl.innerText = `Visar de ${topResults.length} mest relevanta SNI-koderna baserat på beskrivningen.`;
                 searchBtn.disabled = false;
+                
+                // Show the radio buttons now that we have data
+                document.getElementById('viewToggle').style.display = 'block';
 
-                // --- D. RENDER RESULTS ---
-                topResults.forEach(res => {
-                    const fullData = database.find(item => item.sni === res.sni);
-                    if (!fullData) return;
-
-                    let detailsHtml = "";
-
-                    if (fullData.covers && fullData.covers.length > 0) {
-                        detailsHtml += `<h4>Omfattar:</h4><ul>${fullData.covers.map(c => `<li>${c}</li>`).join('')}</ul>`;
-                    }
-                    if (fullData.also_covers && fullData.also_covers.length > 0) {
-                        detailsHtml += `<h4>Omfattar även:</h4><ul>${fullData.also_covers.map(c => `<li>${c}</li>`).join('')}</ul>`;
-                    }
-                    if (fullData.does_not_cover && fullData.does_not_cover.length > 0) {
-                        detailsHtml += `<h4>Omfattar inte:</h4><ul>${fullData.does_not_cover.map(c => `<li>${c}</li>`).join('')}</ul>`;
-                    }
-                    if (fullData.examples && fullData.examples.length > 0) {
-                        detailsHtml += `<h4>Exempel på vad som ingår:</h4><ul>${fullData.examples.map(c => `<li>${c}</li>`).join('')}</ul>`;
-                    }
-
-                    // Render the fused score as a relative metric (scaled roughly out of the theoretical max)
-                    // Max possible score happens when rank=1 for both searches
-                    const maxPossibleScore = (KEYWORD_WEIGHT * (1 / (RRF_K + 1))) + (VECTOR_WEIGHT * (1 / (RRF_K + 1)));
-                    const displayScore = ((res.score / maxPossibleScore) * 100).toFixed(1);
-
-                    resultsEl.innerHTML += `
-                        <details class="result">
-                            <summary>
-                                <div class="score">Träffsäkerhet: ${displayScore}% </div>
-                                <div class="sni-title">${fullData.sni} - ${fullData.title}</div>
-                            </summary>
-                            <div class="sni-details">
-                                ${detailsHtml}
-                                <a class="scb-link" href="${fullData.url}" target="_blank">Läs mer på SCB:s webbplats ↗</a>
-                            </div>
-                        </details>
-                    `;
-                });
+                // Call our new render function to display the list
+                renderResults();
 
             } catch (error) {
                 console.error("Search Error:", error);
@@ -305,6 +334,80 @@
                 statusEl.style.color = "red";
                 searchBtn.disabled = false;
             }
+        });
+
+        function renderResults() {
+            const viewMode = document.querySelector('input[name="resultView"]:checked').value;
+            
+            // Create a shallow copy of the results so we don't break the original array
+            let sortedResults = [...currentResults];
+
+            // Sort the array based on the selected mode
+            if (viewMode === 'rerank') {
+                sortedResults.sort((a, b) => (b.rerank_score || -999) - (a.rerank_score || -999));
+            } else {
+                sortedResults.sort((a, b) => b.score - a.score);
+            }
+
+            resultsEl.innerHTML = "";
+
+            const KEYWORD_WEIGHT = 0.4; 
+            const VECTOR_WEIGHT = 0.6; 
+            const RRF_K = 60;
+            const maxPossibleScore = (KEYWORD_WEIGHT * (1 / (RRF_K + 1))) + (VECTOR_WEIGHT * (1 / (RRF_K + 1)));
+
+            sortedResults.forEach((res, rankIdx) => {
+                const fullData = database.find(item => item.sni === res.sni);
+                if (!fullData) return;
+
+                let detailsHtml = "";
+                if (fullData.covers && fullData.covers.length > 0) {
+                    detailsHtml += `<h4>Omfattar:</h4><ul>${fullData.covers.map(c => `<li>${c}</li>`).join('')}</ul>`;
+                }
+                if (fullData.also_covers && fullData.also_covers.length > 0) {
+                    detailsHtml += `<h4>Omfattar även:</h4><ul>${fullData.also_covers.map(c => `<li>${c}</li>`).join('')}</ul>`;
+                }
+                if (fullData.does_not_cover && fullData.does_not_cover.length > 0) {
+                    detailsHtml += `<h4>Omfattar inte:</h4><ul>${fullData.does_not_cover.map(c => `<li>${c}</li>`).join('')}</ul>`;
+                }
+                if (fullData.examples && fullData.examples.length > 0) {
+                    detailsHtml += `<h4>Exempel på vad som ingår:</h4><ul>${fullData.examples.map(c => `<li>${c}</li>`).join('')}</ul>`;
+                }
+
+                let scoreHtml = "";
+                const displayRrfScore = ((res.score / maxPossibleScore) * 100).toFixed(1);
+                
+                if (viewMode === 'rerank' && res.rerank_score !== undefined) {
+                    scoreHtml = `Semantisk Relevans (Cross-Encoder): ${res.rerank_score.toFixed(3)} <span style="color:#666; font-weight:normal; margin-left: 8px;">(RRF: ${displayRrfScore}%)</span>`;
+                } else {
+                    scoreHtml = `Träffsäkerhet (RRF): ${displayRrfScore}%`;
+                    if (res.rerank_score !== undefined) {
+                        scoreHtml += `<span style="color:#666; font-weight:normal; margin-left: 8px;">(Reranker: ${res.rerank_score.toFixed(2)})</span>`;
+                    }
+                }
+
+                resultsEl.innerHTML += `
+                    <details class="result">
+                        <summary>
+                            <div class="score">#${rankIdx + 1} | ${scoreHtml} </div>
+                            <div class="sni-title">${fullData.sni} - ${fullData.title}</div>
+                        </summary>
+                        <div class="sni-details">
+                            ${detailsHtml}
+                            <a class="scb-link" href="${fullData.url}" target="_blank">Läs mer på SCB:s webbplats ↗</a>
+                        </div>
+                    </details>
+                `;
+            });
+        }
+
+        // Listen for changes from the radio buttons
+        document.querySelectorAll('input[name="resultView"]').forEach(radio => {
+            radio.addEventListener('change', () => {
+                if (currentResults.length > 0) {
+                    renderResults();
+                }
+            });
         });
 
         init();
